@@ -1,0 +1,157 @@
+---
+title: "p8105_HW6"
+author: "Yongzi Yu yy3103"
+output: github_document
+---
+
+```{r}
+library(tidyverse)
+library(broom)
+library(purrr)
+library(glmnet)
+library(modelr)
+```
+
+# Problem 1
+```{r}
+#check for missing data
+bwt_df = read_csv("data/birthweight.csv")
+bwt_df[!complete.cases(bwt_df),]
+```
+-  There is no missing value for the data.
+
+```{r}
+bwt_df = 
+  read_csv("./data/birthweight.csv") %>% 
+  janitor::clean_names() %>%
+  mutate(
+    babysex = as.factor(babysex),
+    babysex = fct_recode(babysex, "male" = "1", "female" = "2"),
+    frace = as.factor(frace),
+    frace = fct_recode(frace, "white" = "1", "black" = "2", "asian" = "3", 
+                       "puerto rican" = "4", "other" = "8"),
+    malform = as.logical(malform),
+    mrace = as.factor(mrace),
+    mrace = fct_recode(mrace, "white" = "1", "black" = "2", "asian" = "3", 
+                       "puerto rican" = "4"))
+
+lm1 <- lm(bwt_df,formula= bwt ~.)
+summary(lm1)
+```
+-  Based on the summary of linear regression with all predictors, variables with higher estimate values and significant p-values are chosen. 
+-  I choose baby’s head circumference at birth `bhead`,children birth weight should have associations with baby’s sex `babysex`, baby’s length at birth `blength`,and `gaweeks`.
+
+```{r}
+#linear regression model
+fit1 = lm(bwt ~ blength + babysex + bhead + gaweeks, data = bwt_df)
+
+bwt_df %>% 
+  add_predictions(fit1) %>% 
+  add_residuals(fit1) %>% 
+  ggplot(aes(x = pred, y = resid)) +
+  geom_point() +
+  labs(
+    title = "scatterplot of residuals",
+    x = "birth weight",
+    y = "residuals"
+  )
+```
+
+```{r}
+#run cv
+fit1 = lm(bwt ~ bhead + blength + gaweeks +  babysex, data = bwt_df)
+
+fit2 = lm(bwt ~ blength + gaweeks, data = bwt_df)
+
+fit3 = lm(bwt ~ bhead + blength + babysex+ bhead*blength*babysex, data = bwt_df)
+
+cv_df =
+  crossv_mc(bwt_df, 100) %>% 
+  mutate(
+    test = map(test, as_tibble)
+  ) %>%
+  mutate(
+    fit1 = map(.x = train, 
+                   ~ lm(bwt ~ bhead + blength + gaweeks +  babysex,data = .x)),
+    fit2 = map(.x = train, ~ lm(bwt ~ blength + gaweeks, data = .x)),
+    fit3 = map(.x = train, ~ lm(bwt ~ bhead + blength + babysex+ bhead*blength*babysex, data = .x))
+  ) %>%
+  mutate(
+    rmse_fit1 = map2_dbl(.x = fit1, .y = test, ~ rmse(model = .x, data = .y)),
+    rmse_fit2 = map2_dbl(.x = fit2, .y = test, ~ rmse(model = .x, data = .y)),
+    rmse_fit3 = map2_dbl(.x = fit3, .y = test, ~ rmse(model = .x, data = .y))
+  )
+
+cv_df %>% 
+  pivot_longer(cols = starts_with("rmse"),
+               names_to = "model",
+               values_to = "rmse",
+               names_prefix = "rmse") %>% 
+  mutate(model = fct_reorder(model, rmse)) %>%
+  ggplot(aes(x = model, y = rmse, fill = model)) +
+  geom_violin() +
+  labs(y = "rmse",
+      title = "distribution of rmse of three models")
+```
+-  Based on the rmse plot, the second model which uses birth and gestational age has higher rmse value. It means that second model has higher prediction error. My model fit 1 is better than the second model and third model. 
+
+# Problem 2
+```{r}
+weather_df = 
+  rnoaa::meteo_pull_monitors(
+    c("USW00094728"),
+    var = c("PRCP", "TMIN", "TMAX"), 
+    date_min = "2017-01-01",
+    date_max = "2017-12-31") %>%
+  mutate(
+    name = recode(id, USW00094728 = "CentralPark_NY"),
+    tmin = tmin / 10,
+    tmax = tmax / 10) %>%
+  select(name, id, everything())
+
+weather_df
+
+set.seed(666)
+
+bootstrap_w = 
+  weather_df %>%
+  modelr::bootstrap(n = 5000,id="strap_number") %>%
+  mutate(
+    model = map(.x= strap, ~lm(tmax ~ tmin, data = .x)
+  ))
+  
+rsquare_result = 
+  bootstrap_w %>% 
+  mutate(
+    result = map(model, broom::glance),
+  ) %>% 
+  unnest(result) %>% 
+  select(strap_number, r.squared)  
+
+log_result = 
+  bootstrap_w %>% 
+  mutate(
+    result = map(model, broom::tidy)
+  ) %>% 
+  unnest(result) %>% 
+  group_by(strap_number) %>% 
+  mutate(
+  log = log(prod(estimate))
+  ) %>% 
+  filter(term == "tmin") %>% 
+  select(strap_number, log)
+
+
+rsquare_result %>% 
+  ggplot(aes(x = r.squared)) +
+  geom_density() +
+  labs(title = "distribution of estimated r^2 of 5000 bootstrap samples")
+
+log_result %>% 
+  ggplot(aes(x = log)) +
+  geom_density() +
+  labs(title = "distribution of log(b0*b1) of 5000 bootstrap samples")
+```
+-  2.5% and 97.5% quantiles to provide a 95% confidence interval for r̂ 2 is . `r rsquare_result %>% pull(r.squared) %>% quantile(c(0.025, 0.975))` and for log(β̂ 0∗β̂ `r log_result %>% pull(log) %>% quantile(c(0.025, 0.975))`
+
+-  Based on the plot of distribution, it shows that the data is symmetric.
